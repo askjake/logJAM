@@ -1,0 +1,48 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" DefaultTargets="Build">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>{84f92827-ffa8-4f4b-a694-cb51215e4ba3}</ProjectGuid>
+    <ProjectHome />
+    <StartupFile>logJAM.py</StartupFile>
+    <SearchPath>*\</SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <ProjectTypeGuids>{888888a0-9f3d-457c-b088-3a5042f75d52}</ProjectTypeGuids>
+    <LaunchProvider>Standard Python launcher</LaunchProvider>
+    <InterpreterId />
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'" />
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'" />
+  <PropertyGroup>
+    <VisualStudioVersion Condition=" '$(VisualStudioVersion)' == '' ">10.0</VisualStudioVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <Content Include="credentials.txt" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="analysis\anomaly_detection\autoencoder.py" />
+    <Compile Include="analysis\anomaly_detection\lstm_anomaly.py" />
+    <Compile Include="analysis\log_analysis_gpu.py" />
+    <Compile Include="analysis\visualization\superset_connector.py" />
+    <Compile Include="db\neo4j_storer.py" />
+    <Compile Include="db\postgres_storer.py" />
+    <Compile Include="db\schema_manager.py" />
+    <Compile Include="ingestion\linking\enricher.py" />
+    <Compile Include="ingestion\log_ingest.py" />
+    <Compile Include="logJAM.py" />
+    <Compile Include="parsers\base_parser.py" />
+    <Compile Include="parsers\patterns.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="analysis" />
+    <Folder Include="analysis\anomaly_detection" />
+    <Folder Include="analysis\visualization" />
+    <Folder Include="db" />
+    <Folder Include="ingestion" />
+    <Folder Include="ingestion\linking" />
+    <Folder Include="parsers" />
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+</Project>
