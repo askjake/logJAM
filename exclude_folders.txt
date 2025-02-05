@@ -1,0 +1,5 @@
+_pycache_
+logs
+vJAM
+LIB
+apps

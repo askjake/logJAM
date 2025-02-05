@@ -4,49 +4,48 @@ from dateutil import parser as dateparser
 
 
 
-
-
-def convert_to_utc(timestamp_str):
-        timestamp_str = timestamp_str.strip()
-        current_year = datetime.now().year
+def convert_to_utc(timestamp_str, last_valid_timestamp=None):
+    """Converts timestamps to UTC format."""
+    timestamp_str = timestamp_str.strip()
+    current_year = datetime.now().year
+    try:
+        dt = dateparser.parse(timestamp_str, fuzzy=True)
+    except:
+        if re.match(r'^\d{1,2}/\d{1,2}\b', timestamp_str):
+            timestamp_str = f"{current_year}/{timestamp_str}"
+        elif re.match(r'^[A-Za-z]{3,}\s+\d{1,2}\b', timestamp_str):
+            parts = timestamp_str.split()
+            if len(parts) >= 2:
+                timestamp_str = f"{parts[0]} {parts[1]} {current_year} {' '.join(parts[2:])}"
         try:
-            dt = parser.parse(timestamp_str, fuzzy=True)
+            dt = dateparser.parse(timestamp_str, fuzzy=True)
         except:
-            if re.match(r'^\d{1,2}/\d{1,2}\b', timestamp_str):
-                timestamp_str = f"{current_year}/{timestamp_str}"
-            elif re.match(r'^[A-Za-z]{3,}\s+\d{1,2}\b', timestamp_str):
-                parts = timestamp_str.split()
-                if len(parts) >= 2:
-                    timestamp_str = f"{parts[0]} {parts[1]} {current_year} {' '.join(parts[2:])}"
-            try:
-                dt = parser.parse(timestamp_str, fuzzy=True)
-            except:
-                dt = None
+            dt = None
 
-        if not dt:
-            return fallback_to_previous_timestamp(timestamp_str)
+    if not dt:
+        return fallback_to_previous_timestamp(timestamp_str, last_valid_timestamp)
 
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        dt_utc = dt.astimezone(timezone.utc)
-        return dt_utc.isoformat()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat()
 
-def fallback_to_previous_timestamp(timestamp_str):
-        if last_valid_timestamp:
-            time_match = re.search(r'(\d{1,2}):(\d{1,2}):(\d{1,2})', timestamp_str)
-            if time_match:
-                hours, minutes, seconds = map(int, time_match.groups())
-                #print(f'hours: {hours}')
-                fallback = last_valid_timestamp.replace(
-                    hour=hours, minute=minutes, second=seconds, microsecond=0
-                )
-                return fallback.astimezone(timezone.utc).isoformat()
-            else:
-                return last_valid_timestamp.astimezone(timezone.utc).isoformat()
-        return None
+
+def fallback_to_previous_timestamp(timestamp_str, last_valid_timestamp=None):
+    """Falls back to the last valid timestamp if the current one is invalid."""
+    if last_valid_timestamp:
+        time_match = re.search(r'(\d{1,2}):(\d{1,2}):(\d{1,2})', timestamp_str)
+        if time_match:
+            hours, minutes, seconds = map(int, time_match.groups())
+            fallback = last_valid_timestamp.replace(
+                hour=hours, minute=minutes, second=seconds, microsecond=0
+            )
+            return fallback.astimezone(timezone.utc).isoformat()
+        else:
+            return last_valid_timestamp.astimezone(timezone.utc).isoformat()
+    return None
+
 
 def parse_log_line(line, last_valid_timestamp=None, rx_id=None):
-    
     log_patterns = [
         {
             "name": "standard_log",
@@ -56,7 +55,8 @@ def parse_log_line(line, last_valid_timestamp=None, rx_id=None):
                 "timestamp": convert_to_utc(m.group(2)),
                 "file_line": m.group(3),
                 "function": m.group(4),
-                "data": m.group(5)
+                "data": m.group(5),
+                "RxID": rx_id
             }
         },
         {
@@ -66,7 +66,8 @@ def parse_log_line(line, last_valid_timestamp=None, rx_id=None):
                 "category": m.group(1),
                 "timestamp": convert_to_utc(m.group(2)),
                 "info": m.group(3),
-                "data": m.group(4)
+                "data": m.group(4),
+                "RxID": rx_id
             }
         },
         {
@@ -146,17 +147,13 @@ def parse_log_line(line, last_valid_timestamp=None, rx_id=None):
         }
     ]
 
+
     for pattern in log_patterns:
         match = re.match(pattern["pattern"], line)
         if match:
             parsed_data = pattern["format"](match)
-            if parsed_data:
-                parsed_data["RxID"] = RxID
             if not parsed_data.get("timestamp"):
-                parsed_data["timestamp"] = fallback_to_previous_timestamp(line)
-            if "group_by" in pattern:
-                group_pipeline_control(parsed_data[pattern["group_by"]], parsed_data)
-                return None  # Do not return grouped lines immediately
+                parsed_data["timestamp"] = fallback_to_previous_timestamp(line, last_valid_timestamp)
             return parsed_data
 
     return None
