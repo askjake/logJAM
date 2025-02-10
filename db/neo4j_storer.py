@@ -11,7 +11,7 @@ class Neo4jStorer:
 
     def store_log_line(self, log_data):
         """Stores a single log line (kept for backwards compatibility)."""
-        #print(f"[NEO4J DEBUG] Storing single log entry: {log_data}")
+        #print(f"[NEO4J DEBUG] Storing single log entry")
         with self.driver.session() as session:
             session.write_transaction(self._create_nodes_and_relationships, log_data)
 
@@ -77,7 +77,7 @@ class Neo4jStorer:
         MERGE (p)-[:GENERATED]->(log)
         """
         tx.run(relate_process_log, category=category, uniqueKey=unique_key)
-        print(f"[NEO4J DEBUG] Created relationship: (Process)-[:GENERATED]->(LogLine)")
+        print(f"[NEO4J DEBUG] Created relationship: {category:<25} ->GENERATED->  {data}")
 
         if sid:
             session_query = "MERGE (s:Session {sid: $sid})"
@@ -87,7 +87,7 @@ class Neo4jStorer:
             MERGE (log)-[:PART_OF_SESSION]->(s)
             """
             tx.run(relate_log_session, sid=sid, uniqueKey=unique_key)
-            #print(f"[NEO4J DEBUG] Created relationship: (LogLine)-[:PART_OF_SESSION]->(Session)")
+            print(f"[NEO4J DEBUG] Created relationship: ({sid:<25})-[:PART_OF_SESSION]->{data}")
 
         if cid:
             conn_query = "MERGE (c:Connection {cid: $cid})"
@@ -97,7 +97,7 @@ class Neo4jStorer:
             MERGE (log)-[:ASSOCIATED_WITH]->(c)
             """
             tx.run(relate_log_conn, cid=cid, uniqueKey=unique_key)
-            #print(f"[NEO4J DEBUG] Created relationship: (LogLine)-[:ASSOCIATED_WITH]->(Connection)")
+            print(f"[NEO4J DEBUG] Created relationship: ({cid:<25})-[:ASSOCIATED_WITH]->{data}")
 
     @staticmethod
     def _create_nodes_and_relationships_batch(tx, batch):
@@ -105,7 +105,7 @@ class Neo4jStorer:
         Batch version that uses UNWIND to process multiple log lines.
         Each log in the batch is expected to have a pre-computed "unique_key".
         """
-        #print(f"[NEO4J DEBUG] Inserting batch of {len(batch)} log lines...")
+        print(f"[NEO4J DEBUG] Inserting batch of {len(batch)} log lines...")
         query = """
         UNWIND $batch AS log
         MERGE (l:LogLine {unique_key: log.unique_key})

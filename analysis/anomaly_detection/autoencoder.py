@@ -1,13 +1,16 @@
 ﻿# analysis/anomaly_detection/autoencoder.py
 
+import os
+import json
+import argparse
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader, TensorDataset
-
-import psycopg2  # For Postgres
+import psycopg2
 from psycopg2.extras import DictCursor
+from datetime import datetime
 
 class LogAutoencoder(nn.Module):
     def __init__(self, input_size, latent_dim=16):
@@ -73,27 +76,41 @@ def detect_anomalies(model, data, threshold=None):
     anomalies = mse > threshold
     return anomalies, mse, threshold
 
-def fetch_table_data_autoencoder(pg_conn, table_name):
+def fetch_table_data_autoencoder(pg_conn, table_name, start_time=None, end_time=None):
     """
-    Example: fetch logs from table_name and convert to numeric features for autoencoder.
-    We'll create a simple 2D feature: 
-      1) timestamp as epoch 
+    Fetch logs from table_name and convert to numeric features for autoencoder:
+      1) timestamp as epoch
       2) length of the 'data' field
+
+    If start_time/end_time are provided (as ISO strings), filter logs to that range.
+    This helps match the timeframe of a user's complaint.
     """
+    where_clauses = ["timestamp IS NOT NULL"]
+    params = {}
+
+    if start_time:
+        where_clauses.append("timestamp >= %(start_time)s")
+        params["start_time"] = start_time
+    if end_time:
+        where_clauses.append("timestamp <= %(end_time)s")
+        params["end_time"] = end_time
+
+    where_sql = " AND ".join(where_clauses)
+
     sql = f"""
     SELECT EXTRACT(EPOCH FROM timestamp) AS ts_epoch,
            COALESCE(LENGTH(data), 0) AS data_len
     FROM "{table_name}"
-    WHERE timestamp IS NOT NULL
+    WHERE {where_sql}
     ORDER BY timestamp ASC
     """
+
     with pg_conn.cursor(cursor_factory=DictCursor) as cur:
-        cur.execute(sql)
+        cur.execute(sql, params)
         rows = cur.fetchall()
 
-    # Convert to NumPy
     if not rows:
-        print(f"[Autoencoder] No data found in {table_name}.")
+        print(f"[Autoencoder] No data found in {table_name} (with filters).")
         return np.array([])
 
     features = []
@@ -104,22 +121,127 @@ def fetch_table_data_autoencoder(pg_conn, table_name):
 
     return np.array(features, dtype=np.float32)
 
-def run_autoencoder_analysis(pg_conn, table_name, latent_dim=2, epochs=10, batch_size=32):
+def run_autoencoder_analysis(pg_conn, table_name, latent_dim=2, epochs=10, batch_size=32,
+                             start_time=None, end_time=None):
     """
     High-level function to fetch data from Postgres, train autoencoder, detect anomalies.
     """
-    data = fetch_table_data_autoencoder(pg_conn, table_name)
+    data = fetch_table_data_autoencoder(pg_conn, table_name, start_time, end_time)
     if data.size == 0:
-        print(f"[Autoencoder] Skipping analysis: No data in {table_name}.")
+        print(f"[Autoencoder] Skipping: No data in {table_name} (with filters).")
         return
 
     input_size = data.shape[1]
     print(f"[Autoencoder] Training on table {table_name}, shape={data.shape}")
 
-    model = train_autoencoder(data, input_size=input_size, latent_dim=latent_dim, epochs=epochs, batch_size=batch_size)
+    model = train_autoencoder(data, input_size=input_size, latent_dim=latent_dim,
+                              epochs=epochs, batch_size=batch_size)
     anomalies, mse_scores, threshold = detect_anomalies(model, data)
     print(f"[Autoencoder] Completed analysis. Threshold={threshold:.4f}, #Anomalies={np.sum(anomalies)}.")
-
-    # Optionally, we could store anomalies in the DB or log them
-    # For now, just print a summary
+    # Optionally store anomalies back in DB or log them
     return anomalies, mse_scores, threshold
+
+# ---------- ADDED MAIN FOR STANDALONE USAGE -------------
+def get_all_user_tables(pg_conn):
+    """
+    Returns a list of user-defined table names in the 'public' schema,
+    ignoring system tables. Adjust if you store logs in a different schema.
+    """
+    query = """
+    SELECT tablename
+    FROM pg_catalog.pg_tables
+    WHERE schemaname = 'public'
+      AND tablename NOT LIKE 'pg_%'
+      AND tablename NOT LIKE 'sql_%';
+    """
+    with pg_conn.cursor() as cur:
+        cur.execute(query)
+        rows = cur.fetchall()
+    return [r[0] for r in rows]
+
+def main():
+    parser = argparse.ArgumentParser(description="Autoencoder-based Anomaly Detection")
+    parser.add_argument("--table_name", type=str,
+                        help="If provided, analyze only this table. Otherwise, analyze all user tables.")
+    parser.add_argument("--latent_dim", type=int, default=2,
+                        help="Latent dimension for the autoencoder.")
+    parser.add_argument("--epochs", type=int, default=10,
+                        help="Number of training epochs.")
+    parser.add_argument("--batch_size", type=int, default=32,
+                        help="Training batch size.")
+    parser.add_argument("--start_time", type=str, default=None,
+                        help="Optional start time (ISO format) to filter logs (e.g. '2023-08-01T00:00:00').")
+    parser.add_argument("--end_time", type=str, default=None,
+                        help="Optional end time (ISO format) to filter logs.")
+    args = parser.parse_args()
+
+    # Find the project base dir (two or three levels up from this file)
+    base_dir = os.path.dirname(
+        os.path.dirname(
+            os.path.dirname(os.path.abspath(__file__))
+        )
+    )
+    credentials_file = os.path.join(base_dir, "credentials.txt")
+
+    if not os.path.exists(credentials_file):
+        print(f"❌ credentials.txt not found at: {credentials_file}")
+        return
+
+    # Load credentials
+    try:
+        with open(credentials_file, "r") as f:
+            creds = json.load(f)
+    except json.JSONDecodeError as e:
+        print(f"❌ Error decoding JSON in {credentials_file}: {e}")
+        return
+
+    db_host = creds.get("DB_HOST")
+    db_name = creds.get("DB_NAME")
+    db_user = creds.get("DB_USER")
+    db_pass = creds.get("DB_PASSWORD")
+
+    # Connect to PostgreSQL
+    try:
+        pg_conn = psycopg2.connect(
+            host=db_host,
+            database=db_name,
+            user=db_user,
+            password=db_pass
+        )
+    except Exception as e:
+        print(f"❌ Error connecting to PostgreSQL at {db_host}: {e}")
+        return
+
+    if args.table_name:
+        # Analyze only the specified table
+        print(f"[Autoencoder] Analyzing table '{args.table_name}' only.")
+        run_autoencoder_analysis(
+            pg_conn,
+            table_name=args.table_name,
+            latent_dim=args.latent_dim,
+            epochs=args.epochs,
+            batch_size=args.batch_size,
+            start_time=args.start_time,
+            end_time=args.end_time
+        )
+    else:
+        # Analyze ALL user tables
+        all_tables = get_all_user_tables(pg_conn)
+        print(f"[Autoencoder] Found {len(all_tables)} user-defined tables in '{db_name}'.")
+        for t in all_tables:
+            print(f"\n[Autoencoder] Analyzing table '{t}' ...")
+            run_autoencoder_analysis(
+                pg_conn,
+                table_name=t,
+                latent_dim=args.latent_dim,
+                epochs=args.epochs,
+                batch_size=args.batch_size,
+                start_time=args.start_time,
+                end_time=args.end_time
+            )
+
+    pg_conn.close()
+    print("[Autoencoder] Completed analysis. Connection closed.")
+
+if __name__ == "__main__":
+    main()

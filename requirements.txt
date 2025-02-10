@@ -1,6 +1,6 @@
 paramiko
 psycopg2
 neo4j
-python-dateutil
+python-dateutil
 numpy
 torch
