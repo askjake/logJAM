@@ -4,3 +4,13 @@ neo4j
 python-dateutil
 numpy
 torch
+pyqt5
+scikit-learn
+matplotlib
+flask
+pandas
+plotly
+pycallgraph2
+psycopg2
+sentence-transformers
+sqlalchemy
