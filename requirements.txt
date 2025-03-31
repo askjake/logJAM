@@ -14,3 +14,6 @@ pycallgraph2
 psycopg2
 sentence-transformers
 sqlalchemy
+ansi2html
+streamlit
+psycopg2-binary

@@ -124,7 +124,7 @@ def extract_features_and_labels(data_rows):
             label = str(label)
         labels.append(label)
     if texts:
-        log_progress(f"[DEBUG] Sample training text (first 10000 chars): {texts[0][:10000]}...")
+        log_progress(f"[DEBUG] Sample training text (first 10000 chars): {texts[0][:1000]}...")
         log_progress(f"[DEBUG] Sample label: {labels[0]}")
     return texts, labels
 

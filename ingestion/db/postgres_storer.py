@@ -101,9 +101,9 @@ def ensure_unique_constraint(connection, table_name, column='data_hash'):
             alter_query = f'ALTER TABLE "{table_name}" ADD CONSTRAINT {constraint_name} UNIQUE ({column})'
             cursor.execute(alter_query)
             connection.commit()
-            print(f"✅ Added unique constraint {constraint_name} on {column} in table {table_name}")
-        else:
-            print(f"[INFO] Unique constraint on {column} already exists in table {table_name}.")
+            #print(f"✅ Added unique constraint {constraint_name} on {column} in table {table_name}")
+        #else:
+            #print(f"[INFO] Unique constraint on {column} already exists in table {table_name}.")
     except Exception as e:
         connection.rollback()
         print(f"[WARN] Could not add unique constraint on {column} in table {table_name}: {e}")
@@ -160,7 +160,7 @@ def add_missing_columns(cursor, table_name, new_columns):
                 alter_query = f"""ALTER TABLE "{table_name}" ADD COLUMN "{column}" TEXT"""
                 cursor.execute(alter_query)
                 cursor.connection.commit()
-                print(f"✅ Added column '{column}' to table '{table_name}'")
+                #print(f"✅ Added column '{column}' to table '{table_name}'")
             except Exception as e:
                 cursor.connection.rollback()
 

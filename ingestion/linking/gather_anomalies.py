@@ -5,35 +5,34 @@ import json
 import sys
 import argparse
 
+
 def main():
     """
     Main entry point: parse args, then run gather_anomalies for either
     a specific table_name or all tables.
     """
     parser = argparse.ArgumentParser(
-        description="Gather anomalies from R-tables into 'anomalies' table."
+        description="Gather anomalies from R-tables into the 'anomalies' table."
     )
     parser.add_argument("--table_name", type=str,
-        help="If set, only gather anomalies from this single R########## table.")
+                        help="If set, only gather anomalies from this single R########## table.")
     args = parser.parse_args()
 
     gather_anomalies(args.table_name)
 
+
 def gather_anomalies(single_table=None):
     """
-    Connect to PostgreSQL, run a DO block that:
-      1) Creates any missing columns in 'anomalies' table from the R########## tables.
-      2) Inserts records into 'anomalies' for rows matching:
-         - lstm_is_anomaly = TRUE
-         - customer_marked_flag = TRUE
-         - autoenc_is_anomaly = TRUE
-         - important_investigate = TRUE
+    Connect to PostgreSQL and run a DO block that:
+      1. Creates any missing columns in the anomalies table based on each R########## table.
+      2. Dynamically builds a filter condition that considers any column whose name ends with
+         '_is_anomaly' (checks for TRUE) or contains 'score' (checks for > 0) plus explicit conditions
+         for 'customer_marked_flag' and 'important_investigate'.
+      3. Inserts records from each table that satisfy these dynamic conditions.
 
-      If single_table is provided, only process that table.
-      Otherwise, process all R########## tables.
+      If single_table is provided, only that table is processed.
     """
     try:
-        # Locate credentials file
         base_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         creds_path = os.path.join(base_dir, "credentials.txt")
 
@@ -41,8 +40,6 @@ def gather_anomalies(single_table=None):
             print(f"[ERR] credentials.txt not found: {creds_path}")
             return
 
-        # Load credentials
-        import json
         with open(creds_path, "r") as f:
             j = json.load(f)
 
@@ -51,7 +48,6 @@ def gather_anomalies(single_table=None):
         db_user = j.get("DB_USER")
         db_pass = j.get("DB_PASSWORD")
 
-        # Connect to the logs database
         try:
             pg_conn = psycopg2.connect(host=db_host, dbname=db_name, user=db_user, password=db_pass)
         except Exception as e:
@@ -61,13 +57,12 @@ def gather_anomalies(single_table=None):
         pg_conn.autocommit = True
         cur = pg_conn.cursor()
 
-        # If a single table is given, we adjust the query inside the DO block with:
-        #    AND tablename = single_table
-        # Otherwise, we match all R########## tables.
         single_table_clause = ""
         if single_table:
             single_table_clause = f"AND tablename = '{single_table}'"
+            print(f"[DEBUG] Single table mode enabled for table: {single_table}")
 
+        # The DO block now builds its filter conditions dynamically.
         sql_block = rf"""
         DO $$
         DECLARE
@@ -77,40 +72,36 @@ def gather_anomalies(single_table=None):
             new_columns text[];
             new_col text;
             col_def text;
-            filter_conditions text;
-            lstm_exists boolean;
-            cust_flag_exists boolean;
-            autoenc_exists boolean;
-            investigate_exists boolean;
+            filter_conditions text := '';
             anomaly_count integer;
+            dyn_rec record;
         BEGIN
-            -- Fetch existing columns in the anomalies table
+            -- Fetch existing columns in the anomalies table.
             SELECT array_agg(c.column_name::text)
             INTO existing_columns
             FROM information_schema.columns c
             WHERE c.table_name = 'anomalies';
+            RAISE NOTICE 'Existing columns in anomalies: %', existing_columns;
 
-            -- Iterate through matching table(s)
+            -- Iterate through matching tables.
             FOR tbl IN
                 SELECT tablename
                 FROM pg_catalog.pg_tables
                 WHERE schemaname = 'public'
-                  AND tablename ~ '^R[0-9]{{10}}'
+                  AND tablename ~ '^R[0-9]{10}'
                   {single_table_clause}
             LOOP
                 RAISE NOTICE 'Processing table: %', tbl.tablename;
 
-                -- Identify new columns that are missing in anomalies
+                -- Identify and add any missing columns from the source table to anomalies.
                 SELECT array_agg(c.column_name::text)
                 INTO new_columns
                 FROM information_schema.columns c
                 WHERE c.table_name = tbl.tablename
                   AND c.column_name NOT IN (SELECT unnest(existing_columns));
-
-                -- Add any new columns to anomalies table
+                RAISE NOTICE 'New columns from table %: %', tbl.tablename, new_columns;
                 IF new_columns IS NOT NULL THEN
                     FOR new_col IN SELECT unnest(new_columns) LOOP
-                        -- Get column type from source table
                         SELECT c.data_type ||
                                CASE WHEN c.character_maximum_length IS NOT NULL
                                     THEN '(' || c.character_maximum_length || ')'
@@ -120,117 +111,96 @@ def gather_anomalies(single_table=None):
                         FROM information_schema.columns c
                         WHERE c.table_name = tbl.tablename
                           AND c.column_name = new_col;
-
-                        -- Alter anomalies table to add missing columns
+                        RAISE NOTICE 'Adding column % with type % to anomalies', new_col, col_def;
                         EXECUTE format('ALTER TABLE anomalies ADD COLUMN IF NOT EXISTS %I %s', new_col, col_def);
                     END LOOP;
                 END IF;
 
-                -- Refresh existing_columns list after schema change
+                -- Refresh the list of existing columns.
                 SELECT array_agg(c.column_name::text)
                 INTO existing_columns
                 FROM information_schema.columns c
                 WHERE c.table_name = 'anomalies';
+                RAISE NOTICE 'Updated existing columns in anomalies: %', existing_columns;
 
-                -- Generate column list dynamically
+                -- Generate a column list from the source table.
                 SELECT string_agg(quote_ident(c.column_name), ', ')
                 INTO column_list
                 FROM information_schema.columns c
                 WHERE c.table_name = tbl.tablename;
+                RAISE NOTICE 'Column list for table %: %', tbl.tablename, column_list;
 
-                -- Check if columns exist in this table
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = tbl.tablename AND column_name = 'lstm_is_anomaly'
-                ) INTO lstm_exists;
-
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = tbl.tablename AND column_name = 'customer_marked_flag'
-                ) INTO cust_flag_exists;
-
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = tbl.tablename AND column_name = 'autoenc_is_anomaly'
-                ) INTO autoenc_exists;
-
-                SELECT EXISTS (
-                    SELECT 1 FROM information_schema.columns
-                    WHERE table_name = tbl.tablename AND column_name = 'important_investigate'
-                ) INTO investigate_exists;
-
-                RAISE NOTICE 'customer_marked_flag exists in %: %', tbl.tablename, cust_flag_exists;
-                RAISE NOTICE 'lstm_is_anomaly exists in %: %', tbl.tablename, lstm_exists;
-                RAISE NOTICE 'autoenc_is_anomaly exists in %: %', tbl.tablename, autoenc_exists;
-                RAISE NOTICE 'important_investigate exists in %: %', tbl.tablename, investigate_exists;
-
-                -- Build the WHERE condition
+                -- Dynamically build anomaly filter conditions.
                 filter_conditions := '';
-
-                IF lstm_exists THEN
-                    IF filter_conditions != '' THEN
+                FOR dyn_rec IN
+                  SELECT column_name FROM information_schema.columns
+                  WHERE table_name = tbl.tablename
+                    AND (
+                          column_name ILIKE '%_is_anomaly'
+                          OR (column_name ILIKE '%score%' AND column_name NOT ILIKE '%_is_anomaly')
+                        )
+                LOOP
+                    IF filter_conditions <> '' THEN
                         filter_conditions := filter_conditions || ' OR ';
                     END IF;
-                    filter_conditions := filter_conditions || 'lstm_is_anomaly = TRUE';
-                END IF;
-
-                IF cust_flag_exists THEN
-                    IF filter_conditions != '' THEN
+                    IF dyn_rec.column_name ILIKE '%_is_anomaly' THEN
+                        filter_conditions := filter_conditions || format('%I = TRUE', dyn_rec.column_name);
+                    ELSE
+                        filter_conditions := filter_conditions || format('%I > 0', dyn_rec.column_name);
+                    END IF;
+                END LOOP;
+                -- Explicitly include customer_marked_flag and important_investigate if they exist.
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = tbl.tablename AND column_name = 'customer_marked_flag') THEN
+                    IF filter_conditions <> '' THEN
                         filter_conditions := filter_conditions || ' OR ';
                     END IF;
                     filter_conditions := filter_conditions || 'COALESCE(NULLIF(customer_marked_flag, ''''), ''false'')::BOOLEAN = TRUE';
                 END IF;
-
-                IF autoenc_exists THEN
-                    IF filter_conditions != '' THEN
-                        filter_conditions := filter_conditions || ' OR ';
-                    END IF;
-                    filter_conditions := filter_conditions || 'autoenc_is_anomaly = TRUE';
-                END IF;
-
-                IF investigate_exists THEN
-                    IF filter_conditions != '' THEN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = tbl.tablename AND column_name = 'important_investigate') THEN
+                    IF filter_conditions <> '' THEN
                         filter_conditions := filter_conditions || ' OR ';
                     END IF;
                     filter_conditions := filter_conditions || 'COALESCE(NULLIF(important_investigate::text, ''''), ''false'')::BOOLEAN = TRUE';
                 END IF;
-
                 IF filter_conditions IS NULL OR filter_conditions = '' THEN
                     filter_conditions := 'FALSE';
                 END IF;
+                RAISE NOTICE 'Filter conditions for table %: %', tbl.tablename, filter_conditions;
 
-                -- Debug: count anomalies in the current table
-                IF filter_conditions != 'FALSE' THEN
-                    EXECUTE format('SELECT count(*) FROM %I WHERE %s', tbl.tablename, filter_conditions)
-                    INTO anomaly_count;
-                    RAISE NOTICE 'Found % anomalies in table %', anomaly_count, tbl.tablename;
+                -- Count anomalies in the current table.
+                EXECUTE format('SELECT count(*) FROM %I WHERE %s', tbl.tablename, filter_conditions)
+                INTO anomaly_count;
+                RAISE NOTICE 'Found % anomalies in table %', anomaly_count, tbl.tablename;
 
-                    IF anomaly_count > 0 THEN
-                        EXECUTE format(
-                            'INSERT INTO anomalies (table_name, %s)
-                             SELECT %L, %s
-                             FROM %I
-                             WHERE %s
-                             ORDER BY timestamp DESC',
-                            column_list, tbl.tablename, column_list, tbl.tablename, filter_conditions
-                        );
-                        RAISE NOTICE 'Inserted anomalies from table %', tbl.tablename;
-                    ELSE
-                        RAISE NOTICE 'No anomalies to insert from table %', tbl.tablename;
-                    END IF;
+                IF anomaly_count > 0 THEN
+                    EXECUTE format(
+                        'INSERT INTO anomalies (table_name, %s)
+                         SELECT %L, %s
+                         FROM %I
+                         WHERE %s
+                         ORDER BY "timestamp" DESC',
+                        column_list, tbl.tablename, column_list, tbl.tablename, filter_conditions
+                    );
+                    RAISE NOTICE 'Inserted anomalies from table %', tbl.tablename;
+                ELSE
+                    RAISE NOTICE 'No anomalies to insert from table %', tbl.tablename;
                 END IF;
             END LOOP;
         END $$;
         """
 
-        # Execute the block
+        print("[DEBUG] Executing dynamic DO block to gather anomalies...")
         cur.execute(sql_block)
+        print("[DEBUG] DO block executed successfully.")
         cur.close()
         pg_conn.close()
-        print("Anomalies gathered and inserted into 'anomalies' table successfully!")
+        print("Anomalies gathered and inserted into the 'anomalies' table successfully!")
     except Exception as e:
         print(f"Error: {e}")
         sys.exit(1)
+
 
 if __name__ == "__main__":
     main()
